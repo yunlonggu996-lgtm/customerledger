@@ -1,0 +1,8 @@
+config.json
+customer_ledger_data.json
+customer_ledger.db
+*.pyc
+__pycache__/
+*.log
+.env
+.DS_Store
