@@ -4,8 +4,76 @@
 import json
 import sys
 import os
+import urllib.request
+from datetime import datetime
 
 from feishu_client import FeishuClient, FeishuError
+
+
+def send_feishu_notification(webhook_url, success, update_count, error_msg=None, sign_secret=None):
+    """发送飞书群机器人消息通知。"""
+    if not webhook_url:
+        return
+
+    import hashlib
+    import base64
+    import hmac
+    import time
+
+    if success:
+        content = {
+            "更新记录条数": f"{update_count} 条",
+            "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        title = "客户台账更新成功"
+    else:
+        content = {
+            "错误信息": error_msg or "未知错误",
+            "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        title = "客户台账更新失败"
+
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": "green" if success else "red"
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "fields": [
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**{k}**\n{v}"}}
+                        for k, v in content.items()
+                    ]
+                }
+            ]
+        }
+    }
+
+    # 添加签名（放在请求体中）
+    if sign_secret:
+        timestamp = str(int(time.time()))
+        string_to_sign = f"{timestamp}\n{sign_secret}"
+        sign = base64.b64encode(hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()).decode("utf-8")
+        payload["timestamp"] = timestamp
+        payload["sign"] = sign
+
+    try:
+        req = urllib.request.Request(
+            webhook_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            if result.get("code") == 0 or result.get("StatusCode") == 0:
+                print("\n[通知] 飞书群消息推送成功")
+            else:
+                print(f"\n[通知] 飞书群消息推送失败: {result.get('msg')}")
+    except Exception as e:
+        print(f"\n[通知] 飞书群消息推送异常: {e}")
 
 
 def clear_table(client, app_token, table_id):
@@ -33,6 +101,7 @@ def fetch_latest_data(output_file=None):
     """从 boss-api 拉取最新数据。"""
     from api_client import ApiClient
     from config import DEFAULT_PAGE_SIZE
+    from fetch_data import _normalize_value, _star_to_number, _to_ms_timestamp, _is_date_field
 
     client = ApiClient()
     print("正在从 boss-api 拉取最新数据...")
@@ -43,15 +112,17 @@ def fetch_latest_data(output_file=None):
     for rec in records:
         row = {}
         for k in columns:
-            v = rec.get(k)
-            if v is None:
-                row[k] = ""
-            elif isinstance(v, list):
-                row[k] = ", ".join(str(x) for x in v) if v else ""
-            elif isinstance(v, bool):
-                row[k] = str(v)
+            raw = rec.get(k)
+            if k == "客户星级":
+                # 客户星级 -> 数字
+                num = _star_to_number(raw)
+                row[k] = num if num is not None else ""
+            elif _is_date_field(k):
+                # 日期字段 -> 毫秒时间戳
+                ms = _to_ms_timestamp(raw)
+                row[k] = ms if ms is not None else ""
             else:
-                row[k] = v
+                row[k] = _normalize_value(raw)
         normalized.append(row)
 
     if output_file:
@@ -63,9 +134,10 @@ def fetch_latest_data(output_file=None):
 
 
 def load_user_mapping(client, app_token, user_table_id):
-    """读取人员姓名→unionid 映射。"""
+    """读取人员姓名→unionid 映射，以及在职状态。"""
     print(f"\n读取人员映射表 {user_table_id}...")
-    mapping = {}
+    mapping = {}  # name -> unionid
+    status_map = {}  # name -> 在职状态
     page_token = ""
     while True:
         url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{user_table_id}/records"
@@ -76,15 +148,18 @@ def load_user_mapping(client, app_token, user_table_id):
             fields = item.get("fields", {})
             person_info = fields.get("人员")
             unionid = fields.get("unionid")
+            status = fields.get("在职状态", "")
             if isinstance(person_info, list) and person_info:
                 name = person_info[0].get("name")
-                if name and unionid:
-                    mapping[name] = unionid
+                if name:
+                    if unionid:
+                        mapping[name] = unionid
+                    status_map[name] = status
         page_token = resp.get("data", {}).get("page_token")
         if not page_token:
             break
-    print(f"✓ 读取到 {len(mapping)} 个人员映射")
-    return mapping
+    print(f"✓ 读取到 {len(mapping)} 个人员映射，{len(status_map)} 个在职状态")
+    return mapping, status_map
 
 
 def load_record_id_mapping(client, app_token, record_id_table_id):
@@ -113,7 +188,7 @@ def load_record_id_mapping(client, app_token, record_id_table_id):
     return mapping
 
 
-def build_payload(data, columns, user_mapping, record_id_mapping,
+def build_payload(data, columns, user_mapping, status_map, record_id_mapping,
                    app_token, table_id, client):
     """构造需要更新的记录列表。返回 (updates, inserts, exceptions)
 
@@ -128,9 +203,17 @@ def build_payload(data, columns, user_mapping, record_id_mapping,
     field_name_map = {f["field_id"]: f["field_name"] for f in bitable_fields}
     field_type_map = {f["field_name"]: f["type"] for f in bitable_fields}
 
+    # 多选/单选字段的选项映射 (选项名 -> 选项ID)
+    select_options_map = {}  # {field_name: {option_name: option_id}}
+    for f in bitable_fields:
+        if f["type"] in [3, 4]:  # 单选、多选
+            opts = f.get("property", {}).get("options", [])
+            select_options_map[f["field_name"]] = {opt["name"]: opt["id"] for opt in opts}
+
     mapping = {}
     user_field_names = []
     date_field_names = []
+    select_field_names = set()  # 需要转换为选项ID的字段
     # JSON 字段名 -> 主表字段名 的别名映射
     alias_map = {
         "客户星级": "星级",
@@ -145,6 +228,9 @@ def build_payload(data, columns, user_mapping, record_id_mapping,
             user_field_names.append(col)
         elif ftype == 5:
             date_field_names.append(col)
+        elif ftype in [3, 4] and target_col in select_options_map:
+            # 单选或多选字段，记录下来后面处理
+            select_field_names.add(col)
             mapping[col] = field_map[target_col]
         else:
             mapping[col] = field_map[target_col]
@@ -160,7 +246,24 @@ def build_payload(data, columns, user_mapping, record_id_mapping,
             val = row.get(col)
             if val is None or val == "":
                 continue
-            fields[field_name_map.get(field_id, field_id)] = val
+            field_name = field_name_map.get(field_id, field_id)
+            # 处理多选/单选字段：直接传文本值（不转选项ID）
+            if col in select_field_names:
+                ftype = field_type_map.get(field_name, 0)
+                if isinstance(val, str):
+                    if ftype == 3:
+                        # 单选字段：单个值
+                        fields[field_name] = val
+                    elif ftype == 4:
+                        # 多选字段：需要是列表格式
+                        if ", " in val:
+                            fields[field_name] = [v.strip() for v in val.split(", ")]
+                        else:
+                            fields[field_name] = [val]
+                elif isinstance(val, list):
+                    fields[field_name] = val
+            else:
+                fields[field_name] = val
 
         for col in user_field_names:
             val = row.get(col)
@@ -178,9 +281,19 @@ def build_payload(data, columns, user_mapping, record_id_mapping,
             if unionids:
                 fields[col] = [{"id": uid} for uid in unionids]
             if missing:
-                err_type = "CSM异常" if col == "客户成功" else "RPA教练异常"
-                exceptions.append({"组织名称": row.get("组织名称", ""), "异常信息": err_type})
-                print(f"  ⚠️ {err_type}: {row.get('组织名称', '')}")
+                # 根据在职状态区分异常原因
+                for miss_name in missing:
+                    role = "CSM" if col == "客户成功" else "RPA教练"
+                    if miss_name in status_map:
+                        status = status_map[miss_name]
+                        if status and status != "在职":
+                            err_type = f"{role}离职"
+                        else:
+                            err_type = f"{role}异常"
+                    else:
+                        err_type = f"{role}不存在"
+                    exceptions.append({"组织名称": row.get("组织名称", ""), "异常信息": err_type})
+                    print(f"  ⚠️ {err_type}: {row.get('组织名称', '')} - {miss_name}")
         return fields
 
     for row in data:
@@ -202,24 +315,18 @@ def build_payload(data, columns, user_mapping, record_id_mapping,
     return updates, inserts, exceptions
 
 
-def update_records_batch(client, app_token, table_id, updates, chunk_size=200):
+def update_records_batch(client, app_token, table_id, updates, chunk_size=100):
     """批量更新记录。"""
     total = len(updates)
     success = 0
     failed_ids = []
-    url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_update"
     for i in range(0, total, chunk_size):
         chunk = updates[i:i + chunk_size]
-        data = {"records": chunk}
         try:
-            resp = client._request(url, method="POST", data=data)
-            if resp.get("code") == 0:
-                success += len(resp.get("data", {}).get("records", []))
-            else:
-                # 整批失败，全部计入失败
-                for item in chunk:
-                    failed_ids.append(item["record_id"])
-        except FeishuError:
+            result = client.update_records(app_token, table_id, chunk)
+            success += result.get("success", 0)
+        except FeishuError as e:
+            print(f"  更新批次失败: {e}")
             for item in chunk:
                 failed_ids.append(item["record_id"])
         print(f"  进度: {min(i+chunk_size, total)}/{total}", flush=True)
@@ -313,11 +420,11 @@ def main():
         else:
             data, columns = fetch_latest_data("customer_ledger_data.json")
 
-        user_mapping = load_user_mapping(client, args.app_token, args.user_table_id)
+        user_mapping, status_map = load_user_mapping(client, args.app_token, args.user_table_id)
         record_id_mapping = load_record_id_mapping(client, args.app_token, args.record_id_table_id)
 
         updates, inserts, exceptions = build_payload(
-            data, columns, user_mapping, record_id_mapping,
+            data, columns, user_mapping, status_map, record_id_mapping,
             args.app_token, args.table_id, client
         )
 
@@ -365,15 +472,43 @@ def main():
 
         write_exceptions(client, args.app_token, args.exception_table_id, exceptions)
 
+        # 计算总更新条数（更新 + 新增）
+        total_updated = len(updates) + len(inserts)
+        
+        # 检查是否有更新失败
+        update_failed_count = 0
+        if updates:
+            update_failed_count = result.get("failed", [])
+            update_failed_count = len(update_failed_count) if isinstance(update_failed_count, list) else 0
+        
         print("\n=== 增量更新完成 ===")
+        
+        # 发送通知（成功或失败）
+        webhook_url = defaults.get("feishu-webhook") or defaults.get("feishu_webhook")
+        sign_secret = defaults.get("feishu_sign")
+        if update_failed_count > 0:
+            error_msg = f"更新失败 {update_failed_count} 条"
+            send_feishu_notification(webhook_url, success=False, update_count=total_updated, error_msg=error_msg, sign_secret=sign_secret)
+        else:
+            send_feishu_notification(webhook_url, success=True, update_count=total_updated, sign_secret=sign_secret)
 
     except FeishuError as e:
-        print(f"飞书 API 错误: {e}", file=sys.stderr)
+        error_msg = f"飞书 API 错误: {e}"
+        print(error_msg, file=sys.stderr)
+        # 发送失败通知
+        webhook_url = defaults.get("feishu-webhook") or defaults.get("feishu_webhook")
+        sign_secret = defaults.get("feishu_sign")
+        send_feishu_notification(webhook_url, success=False, update_count=0, error_msg=error_msg, sign_secret=sign_secret)
         sys.exit(1)
     except Exception as e:
-        print(f"错误: {type(e).__name__}: {e}", file=sys.stderr)
+        error_msg = f"{type(e).__name__}: {e}"
+        print(f"错误: {error_msg}", file=sys.stderr)
         import traceback
         traceback.print_exc()
+        # 发送失败通知
+        webhook_url = defaults.get("feishu-webhook") or defaults.get("feishu_webhook")
+        sign_secret = defaults.get("feishu_sign")
+        send_feishu_notification(webhook_url, success=False, update_count=0, error_msg=error_msg, sign_secret=sign_secret)
         sys.exit(1)
 
 

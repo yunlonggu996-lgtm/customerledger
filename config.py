@@ -1,12 +1,22 @@
 """全局配置：API端点、鉴权、分页参数。"""
 
+import json
+import os
+
+# 加载运行时配置
+_config = {}
+_config_path = os.path.join(os.path.dirname(__file__), "config.json")
+if os.path.exists(_config_path):
+    with open(_config_path, "r", encoding="utf-8") as f:
+        _config = json.load(f)
+
 # API 基础配置
 API_BASE_URL = "https://boss-api.shadow-rpa.net"
 API_PATH = "/boss/api/v3/aftersales/scene/query"
 API_URL = API_BASE_URL + API_PATH
 
 # Bearer Token
-BEARER_TOKEN = "e6d04ecf-f80a-4a81-94f9-bc956743fd70"
+BEARER_TOKEN = _config.get("bearer_token", "")
 
 # 默认请求头
 DEFAULT_HEADERS = {
