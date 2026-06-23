@@ -149,7 +149,7 @@ def write_record_ids(client, app_token, record_id_table_id, record_ids, org_name
             "客户名称": name,
             "记录id": rid,
         })
-    result = client.add_records(app_token, record_id_table_id, records, chunk_size=50)
+    result = client.add_records(app_token, record_id_table_id, records, chunk_size=150)
     print(f"✓ 记录ID写入完成: {result['success']}/{result['total']} 条成功")
     return result
 
@@ -166,7 +166,7 @@ def write_exceptions(client, app_token, exception_table_id, exceptions):
             "组织名称": exc["组织名称"],
             "异常信息": exc["异常信息"],
         })
-    result = client.add_records(app_token, exception_table_id, records, chunk_size=50)
+    result = client.add_records(app_token, exception_table_id, records, chunk_size=150)
     print(f"✓ 异常记录写入完成: {result['success']}/{result['total']} 条成功")
     return result
 

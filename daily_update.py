@@ -25,13 +25,13 @@ def send_feishu_notification(webhook_url, success, update_count, error_msg=None,
             "更新记录条数": f"{update_count} 条",
             "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-        title = "客户台账更新成功"
+        title = "浙江客户信息更新成功"
     else:
         content = {
             "错误信息": error_msg or "未知错误",
             "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-        title = "客户台账更新失败"
+        title = "浙江客户信息更新失败"
 
     payload = {
         "msg_type": "interactive",
@@ -315,7 +315,7 @@ def build_payload(data, columns, user_mapping, status_map, record_id_mapping,
     return updates, inserts, exceptions
 
 
-def update_records_batch(client, app_token, table_id, updates, chunk_size=100):
+def update_records_batch(client, app_token, table_id, updates, chunk_size=150):
     """批量更新记录。"""
     total = len(updates)
     success = 0
@@ -450,7 +450,7 @@ def main():
             print(f"\n开始新增 {len(inserts)} 个新客户到主表...")
             new_records_payload = [item["fields"] for item in inserts]
             add_result = client.add_records(args.app_token, args.table_id,
-                                             new_records_payload, chunk_size=50)
+                                             new_records_payload, chunk_size=150)
             new_record_ids = add_result.get("record_ids", [])
             print(f"✓ 新增完成: {add_result['success']}/{add_result['total']} 条")
 
@@ -467,7 +467,7 @@ def main():
                     for name, rid in new_record_id_mapping.items()
                 ]
                 rid_result = client.add_records(args.app_token, args.record_id_table_id,
-                                                record_id_records, chunk_size=50)
+                                                record_id_records, chunk_size=150)
                 print(f"✓ 记录ID写入: {rid_result['success']}/{rid_result['total']} 条")
 
         write_exceptions(client, args.app_token, args.exception_table_id, exceptions)
