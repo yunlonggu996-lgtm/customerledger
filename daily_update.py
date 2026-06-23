@@ -146,9 +146,10 @@ def fetch_latest_data(output_file=None):
     return normalized, columns
 
 
-def load_user_mapping(client, app_token, user_table_id):
+def load_user_mapping(client, app_token, user_table_id, table_name_map=None):
     """读取人员姓名→unionid 映射，以及在职状态。"""
-    print(f"\n读取人员映射表 {user_table_id}...")
+    name = table_name_map.get(user_table_id, user_table_id) if table_name_map else user_table_id
+    print(f"\n读取人员映射表 {name}...")
     mapping = {}  # name -> unionid
     status_map = {}  # name -> 在职状态
     page_token = ""
@@ -175,9 +176,10 @@ def load_user_mapping(client, app_token, user_table_id):
     return mapping, status_map
 
 
-def load_record_id_mapping(client, app_token, record_id_table_id):
+def load_record_id_mapping(client, app_token, record_id_table_id, table_name_map=None):
     """读取 客户名称→主表 record_id 映射。"""
-    print(f"\n读取记录ID表 {record_id_table_id}...")
+    name = table_name_map.get(record_id_table_id, record_id_table_id) if table_name_map else record_id_table_id
+    print(f"\n读取记录ID表 {name}...")
     mapping = {}
     page_token = ""
     while True:
@@ -346,9 +348,10 @@ def update_records_batch(client, app_token, table_id, updates, chunk_size=150):
     return {"total": total, "success": success, "failed": failed_ids}
 
 
-def write_exceptions(client, app_token, exception_table_id, exceptions):
+def write_exceptions(client, app_token, exception_table_id, exceptions, table_name_map=None):
     """写入异常记录：先清空，再合并相同企业后写入。"""
-    print(f"\n清空异常表 {exception_table_id}...")
+    name = table_name_map.get(exception_table_id, exception_table_id) if table_name_map else exception_table_id
+    print(f"\n清空异常表 {name}...")
     clear_table(client, app_token, exception_table_id)
 
     if not exceptions:
@@ -421,6 +424,10 @@ def main():
         token = client.get_tenant_access_token()
         print(f"✓ 获取 token 成功: {token[:20]}...")
 
+        # 获取所有数据表名称映射
+        tables = client.list_tables(args.app_token)
+        table_name_map = {t["table_id"]: t["name"] for t in tables}
+
         if args.data_file and os.path.exists(args.data_file):
             with open(args.data_file, "r", encoding="utf-8") as f:
                 obj = json.load(f)
@@ -433,8 +440,8 @@ def main():
         else:
             data, columns = fetch_latest_data("customer_ledger_data.json")
 
-        user_mapping, status_map = load_user_mapping(client, args.app_token, args.user_table_id)
-        record_id_mapping = load_record_id_mapping(client, args.app_token, args.record_id_table_id)
+        user_mapping, status_map = load_user_mapping(client, args.app_token, args.user_table_id, table_name_map)
+        record_id_mapping = load_record_id_mapping(client, args.app_token, args.record_id_table_id, table_name_map)
 
         updates, inserts, exceptions = build_payload(
             data, columns, user_mapping, status_map, record_id_mapping,
@@ -483,7 +490,7 @@ def main():
                                                 record_id_records, chunk_size=150)
                 print(f"✓ 记录ID写入: {rid_result['success']}/{rid_result['total']} 条")
 
-        write_exceptions(client, args.app_token, args.exception_table_id, exceptions)
+        write_exceptions(client, args.app_token, args.exception_table_id, exceptions, table_name_map)
 
         # 计算总更新条数（更新 + 新增）
         total_updated = len(updates) + len(inserts)

@@ -63,13 +63,23 @@ class FeishuClient:
     # ========== 多维表 API ==========
 
     def list_tables(self, app_token):
-        """列出多维表应用中的数据表。"""
+        """列出多维表应用中的所有数据表（自动处理分页）。返回 [{table_id, name, revision}, ...]"""
         self.ensure_token()
-        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables"
-        resp = self._request(url)
-        if resp.get("code") != 0:
-            raise FeishuError(f"list_tables: {resp.get('msg')}")
-        return resp.get("data", {}).get("items", [])
+        items = []
+        page_token = ""
+        while True:
+            url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables?page_size=100"
+            if page_token:
+                url += f"&page_token={page_token}"
+            resp = self._request(url)
+            if resp.get("code") != 0:
+                raise FeishuError(f"list_tables: {resp.get('msg')}")
+            data = resp.get("data", {})
+            items.extend(data.get("items", []))
+            if not data.get("has_more"):
+                break
+            page_token = data.get("page_token", "")
+        return items
 
     def get_table_fields(self, app_token, table_id):
         """获取数据表的字段列表。"""

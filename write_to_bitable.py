@@ -12,8 +12,9 @@ def load_local_data(file_path="customer_ledger_data.json"):
         return json.load(f)
 
 
-def load_user_mapping(client, app_token, user_table_id):
-    print(f"\n读取人员映射表 {user_table_id}...")
+def load_user_mapping(client, app_token, user_table_id, table_name_map=None):
+    name = table_name_map.get(user_table_id, user_table_id) if table_name_map else user_table_id
+    print(f"\n读取人员映射表 {name}...")
     mapping = {}
     page_token = ""
     while True:
@@ -36,9 +37,10 @@ def load_user_mapping(client, app_token, user_table_id):
     return mapping
 
 
-def clear_table(client, app_token, table_id):
+def clear_table(client, app_token, table_id, table_name_map=None):
     """清空表中所有记录。"""
-    print(f"\n清空表 {table_id}...")
+    name = table_name_map.get(table_id, table_id) if table_name_map else table_id
+    print(f"\n清空表 {name}...")
     record_ids = []
     page_token = ""
     while True:
@@ -140,9 +142,10 @@ def sync_to_bitable(client, app_token, table_id, data, columns, user_mapping=Non
     return result, exceptions, org_names
 
 
-def write_record_ids(client, app_token, record_id_table_id, record_ids, org_names):
+def write_record_ids(client, app_token, record_id_table_id, record_ids, org_names, table_name_map=None):
     """将记录ID与组织名称对应写入记录ID表。"""
-    print(f"\n写入 {len(record_ids)} 条记录ID映射到 {record_id_table_id}...")
+    name = table_name_map.get(record_id_table_id, record_id_table_id) if table_name_map else record_id_table_id
+    print(f"\n写入 {len(record_ids)} 条记录ID映射到 {name}...")
     records = []
     for rid, name in zip(record_ids, org_names):
         records.append({
@@ -154,12 +157,13 @@ def write_record_ids(client, app_token, record_id_table_id, record_ids, org_name
     return result
 
 
-def write_exceptions(client, app_token, exception_table_id, exceptions):
+def write_exceptions(client, app_token, exception_table_id, exceptions, table_name_map=None):
     if not exceptions:
         print("\n✓ 无异常记录")
         return
 
-    print(f"\n写入 {len(exceptions)} 条异常记录到异常表 {exception_table_id}...")
+    name = table_name_map.get(exception_table_id, exception_table_id) if table_name_map else exception_table_id
+    print(f"\n写入 {len(exceptions)} 条异常记录到异常表 {name}...")
     records = []
     for exc in exceptions:
         records.append({
@@ -189,16 +193,20 @@ def main():
         token = client.get_tenant_access_token()
         print(f"✓ 获取 token 成功: {token[:20]}...")
 
-        user_mapping = load_user_mapping(client, args.app_token, args.user_table_id)
+        # 获取所有数据表名称映射
+        tables = client.list_tables(args.app_token)
+        table_name_map = {t["table_id"]: t["name"] for t in tables}
+
+        user_mapping = load_user_mapping(client, args.app_token, args.user_table_id, table_name_map)
 
         data_obj = load_local_data(args.data)
         columns = data_obj["columns"]
         data = data_obj["data"]
         print(f"\n✓ 加载 {len(data)} 条记录，{len(columns)} 个字段")
 
-        clear_table(client, args.app_token, args.table_id)
-        clear_table(client, args.app_token, args.exception_table_id)
-        clear_table(client, args.app_token, args.record_id_table_id)
+        clear_table(client, args.app_token, args.table_id, table_name_map)
+        clear_table(client, args.app_token, args.exception_table_id, table_name_map)
+        clear_table(client, args.app_token, args.record_id_table_id, table_name_map)
 
         result, exceptions, org_names = sync_to_bitable(
             client, args.app_token, args.table_id, data, columns, user_mapping
@@ -206,9 +214,9 @@ def main():
 
         if result.get("record_ids"):
             write_record_ids(client, args.app_token, args.record_id_table_id,
-                             result["record_ids"], org_names)
+                             result["record_ids"], org_names, table_name_map)
 
-        write_exceptions(client, args.app_token, args.exception_table_id, exceptions)
+        write_exceptions(client, args.app_token, args.exception_table_id, exceptions, table_name_map)
 
         print("\n=== 全部完成 ===")
 
