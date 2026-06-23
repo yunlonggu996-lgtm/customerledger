@@ -1,3 +1,14 @@
 {
-    "bearer_token": "your_token_here"
+
+  "bearer_token": "boss的 Bear token",
+  "app_id": "飞书自建应用appid",
+  "app_secret": "飞书自建应用secret",
+  "app_token": "多维表token",
+  "table_id": "主表ID",
+  "exception_table_id": "异常表ID",
+  "record_id_table_id": "记录ID表ID",
+  "user_table_id": "用户表ID",
+  "feishu_webhook": "飞书机器人webhook",
+  "feishu_sign": "飞书机器人sign签名"
 }
+
