@@ -10,7 +10,7 @@ from datetime import datetime
 from feishu_client import FeishuClient, FeishuError
 
 
-def send_feishu_notification(webhook_url, success, update_count, error_msg=None, sign_secret=None):
+def send_feishu_notification(webhook_url, success, update_count, error_msg=None, sign_secret=None, new_customers=None):
     """发送飞书群机器人消息通知。"""
     if not webhook_url:
         return
@@ -33,6 +33,27 @@ def send_feishu_notification(webhook_url, success, update_count, error_msg=None,
         }
         title = "浙江客户信息更新失败"
 
+    elements = [
+        {
+            "tag": "div",
+            "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**{k}**\n{v}"}}
+                for k, v in content.items()
+            ]
+        }
+    ]
+
+    # 如果有新增客户，在卡片中显示
+    if success and new_customers:
+        names = new_customers[:20]
+        customer_text = "\n".join(f"• {name}" for name in names)
+        if len(new_customers) > 20:
+            customer_text += f"\n...等共 {len(new_customers)} 个"
+        elements.insert(0, {
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**新增客户：**\n{customer_text}"}
+        })
+
     payload = {
         "msg_type": "interactive",
         "card": {
@@ -40,15 +61,7 @@ def send_feishu_notification(webhook_url, success, update_count, error_msg=None,
                 "title": {"tag": "plain_text", "content": title},
                 "template": "green" if success else "red"
             },
-            "elements": [
-                {
-                    "tag": "div",
-                    "fields": [
-                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**{k}**\n{v}"}}
-                        for k, v in content.items()
-                    ]
-                }
-            ]
+            "elements": elements
         }
     }
 
@@ -486,11 +499,12 @@ def main():
         # 发送通知（成功或失败）
         webhook_url = defaults.get("feishu-webhook") or defaults.get("feishu_webhook")
         sign_secret = defaults.get("feishu_sign")
+        new_customer_names = [item["org_name"] for item in inserts] if inserts else []
         if update_failed_count > 0:
             error_msg = f"更新失败 {update_failed_count} 条"
-            send_feishu_notification(webhook_url, success=False, update_count=total_updated, error_msg=error_msg, sign_secret=sign_secret)
+            send_feishu_notification(webhook_url, success=False, update_count=total_updated, error_msg=error_msg, sign_secret=sign_secret, new_customers=new_customer_names)
         else:
-            send_feishu_notification(webhook_url, success=True, update_count=total_updated, sign_secret=sign_secret)
+            send_feishu_notification(webhook_url, success=True, update_count=total_updated, sign_secret=sign_secret, new_customers=new_customer_names)
 
     except FeishuError as e:
         error_msg = f"飞书 API 错误: {e}"
