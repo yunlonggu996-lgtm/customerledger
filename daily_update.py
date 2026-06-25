@@ -10,7 +10,7 @@ from datetime import datetime
 from feishu_client import FeishuClient, FeishuError
 
 
-def send_feishu_notification(webhook_url, success, update_count, error_msg=None, sign_secret=None, new_customers=None):
+def send_feishu_notification(webhook_url, success, update_count, error_msg=None, sign_secret=None, new_customers=None, exceptions=None):
     """发送飞书群机器人消息通知。"""
     if not webhook_url:
         return
@@ -52,6 +52,19 @@ def send_feishu_notification(webhook_url, success, update_count, error_msg=None,
         elements.insert(0, {
             "tag": "div",
             "text": {"tag": "lark_md", "content": f"**新增客户：**\n{customer_text}"}
+        })
+
+    # 如果有异常客户，在卡片中显示
+    if exceptions:
+        exc_texts = []
+        for exc in exceptions[:20]:
+            exc_texts.append(f"• {exc.get('组织名称', '')}（{exc.get('异常信息', '')}）")
+        exc_content = "\n".join(exc_texts)
+        if len(exceptions) > 20:
+            exc_content += f"\n...等共 {len(exceptions)} 个"
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**服务人员异常客户：**\n{exc_content}"}
         })
 
     payload = {
@@ -348,16 +361,42 @@ def update_records_batch(client, app_token, table_id, updates, chunk_size=150):
     return {"total": total, "success": success, "failed": failed_ids}
 
 
+def load_existing_exception_orgs(client, app_token, table_id):
+    """读取异常表中已存在的组织名称集合。"""
+    orgs = set()
+    page_token = ""
+    while True:
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+        url += f"?page_size=500&page_token={page_token}" if page_token else "?page_size=500"
+        try:
+            resp = client._request(url)
+        except FeishuError:
+            break
+        items = resp.get("data", {}).get("items", []) or []
+        for item in items:
+            org_name = item.get("fields", {}).get("组织名称")
+            if org_name:
+                orgs.add(org_name)
+        page_token = resp.get("data", {}).get("page_token")
+        if not page_token:
+            break
+    return orgs
+
+
 def write_exceptions(client, app_token, exception_table_id, exceptions, table_name_map=None):
-    """写入异常记录：先清空，再合并相同企业后写入。"""
+    """写入异常记录：对比已有记录，只新增不存在的。返回新增的异常列表用于通知。"""
     name = table_name_map.get(exception_table_id, exception_table_id) if table_name_map else exception_table_id
-    print(f"\n清空异常表 {name}...")
-    clear_table(client, app_token, exception_table_id)
 
     if not exceptions:
         print("✓ 无异常记录")
-        return
+        return []
 
+    # 读取已存在的组织名称
+    print(f"\n读取异常表 {name} 已有记录...")
+    existing_orgs = load_existing_exception_orgs(client, app_token, exception_table_id)
+    print(f"✓ 已有 {len(existing_orgs)} 条异常记录")
+
+    # 合并相同企业的异常信息
     merged = {}
     for exc in exceptions:
         org = exc["组织名称"]
@@ -367,16 +406,25 @@ def write_exceptions(client, app_token, exception_table_id, exceptions, table_na
         if err not in merged[org]:
             merged[org].append(err)
 
-    records = []
+    # 过滤出新增的异常
+    new_records = []
+    new_exceptions = []
     for org, errors in merged.items():
-        records.append({
-            "组织名称": org,
-            "异常信息": "; ".join(errors),
-        })
+        if org in existing_orgs:
+            print(f"  - 跳过已存在的异常: {org}")
+            continue
+        error_info = "; ".join(errors)
+        new_records.append({"组织名称": org, "异常信息": error_info})
+        new_exceptions.append({"组织名称": org, "异常信息": error_info})
 
-    print(f"写入 {len(records)} 条合并后的异常记录...")
-    result = client.add_records(app_token, exception_table_id, records, chunk_size=50)
+    if not new_records:
+        print("✓ 无新增异常记录")
+        return []
+
+    print(f"写入 {len(new_records)} 条新增异常记录...")
+    result = client.add_records(app_token, exception_table_id, new_records, chunk_size=50)
     print(f"✓ 异常记录写入: {result['success']}/{result['total']}")
+    return new_exceptions
 
 
 def main():
@@ -490,7 +538,7 @@ def main():
                                                 record_id_records, chunk_size=150)
                 print(f"✓ 记录ID写入: {rid_result['success']}/{rid_result['total']} 条")
 
-        write_exceptions(client, args.app_token, args.exception_table_id, exceptions, table_name_map)
+        new_exceptions = write_exceptions(client, args.app_token, args.exception_table_id, exceptions, table_name_map)
 
         # 计算总更新条数（更新 + 新增）
         total_updated = len(updates) + len(inserts)
@@ -509,9 +557,9 @@ def main():
         new_customer_names = [item["org_name"] for item in inserts] if inserts else []
         if update_failed_count > 0:
             error_msg = f"更新失败 {update_failed_count} 条"
-            send_feishu_notification(webhook_url, success=False, update_count=total_updated, error_msg=error_msg, sign_secret=sign_secret, new_customers=new_customer_names)
+            send_feishu_notification(webhook_url, success=False, update_count=total_updated, error_msg=error_msg, sign_secret=sign_secret, new_customers=new_customer_names, exceptions=new_exceptions)
         else:
-            send_feishu_notification(webhook_url, success=True, update_count=total_updated, sign_secret=sign_secret, new_customers=new_customer_names)
+            send_feishu_notification(webhook_url, success=True, update_count=total_updated, sign_secret=sign_secret, new_customers=new_customer_names, exceptions=new_exceptions)
 
     except FeishuError as e:
         error_msg = f"飞书 API 错误: {e}"
