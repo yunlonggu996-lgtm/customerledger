@@ -65,3 +65,16 @@ UI_DISPLAY_COLUMNS = [
     "客户分层",
     "客户星级",
 ]
+
+
+def reload_bearer_token():
+    """重新从 config.json 加载 bearer_token，更新运行时配置（不重启进程）。"""
+    global BEARER_TOKEN, DEFAULT_HEADERS
+    if os.path.exists(_config_path):
+        with open(_config_path, "r", encoding="utf-8") as f:
+            _config.clear()
+            _config.update(json.load(f))
+        BEARER_TOKEN = _config.get("bearer_token", "")
+        DEFAULT_HEADERS["Authorization"] = f"Bearer {BEARER_TOKEN}"
+        return True
+    return False

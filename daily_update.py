@@ -8,6 +8,7 @@ import urllib.request
 from datetime import datetime
 
 from feishu_client import FeishuClient, FeishuError
+from api_client import ApiError
 
 
 def send_feishu_notification(webhook_url, success, update_count, error_msg=None, sign_secret=None, new_customers=None, exceptions=None):
@@ -427,6 +428,40 @@ def write_exceptions(client, app_token, exception_table_id, exceptions, table_na
     return new_exceptions
 
 
+def prompt_new_bearer_token(config_path):
+    """提示用户输入新的 bearer_token，更新 config.json 并重载运行时配置。"""
+    from config import reload_bearer_token
+
+    print("\n⚠️  Boss API 鉴权失败，Bearer Token 可能已失效")
+    print("请在下方输入新的 Bearer Token：")
+    try:
+        new_token = input("新的 Bearer Token: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n✗ 用户取消输入")
+        return False
+
+    if not new_token:
+        print("✗ 未输入有效 Token，跳过更新")
+        return False
+
+    # 读取现有配置，更新 token
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            conf = json.load(f)
+        conf["bearer_token"] = new_token
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(conf, f, ensure_ascii=False, indent=2)
+        print("✓ config.json 已更新")
+    except Exception as e:
+        print(f"✗ 写入 config.json 失败: {e}")
+        return False
+
+    # 重载运行时配置
+    reload_bearer_token()
+    print("✓ Bearer Token 已生效，正在重试...")
+    return True
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="客户台账每日增量更新")
@@ -486,7 +521,21 @@ def main():
             print("✗ --no-fetch 需要配合 --data-file 使用")
             sys.exit(1)
         else:
-            data, columns = fetch_latest_data("customer_ledger_data.json")
+            try:
+                data, columns = fetch_latest_data("customer_ledger_data.json")
+            except ApiError as e:
+                print(f"✗ 拉取数据失败: {e}")
+                # 判断是否为鉴权相关错误，提示用户输入新 token
+                err_msg = str(e).lower()
+                is_auth_error = (
+                    "401" in err_msg or "403" in err_msg or
+                    "unauthorized" in err_msg or "token" in err_msg or
+                    "鉴权" in err_msg or "auth" in err_msg
+                )
+                if is_auth_error and prompt_new_bearer_token(config_path):
+                    data, columns = fetch_latest_data("customer_ledger_data.json")
+                else:
+                    raise
 
         user_mapping, status_map = load_user_mapping(client, args.app_token, args.user_table_id, table_name_map)
         record_id_mapping = load_record_id_mapping(client, args.app_token, args.record_id_table_id, table_name_map)
