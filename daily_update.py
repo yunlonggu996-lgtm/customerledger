@@ -339,6 +339,11 @@ def build_payload(data, columns, user_mapping, status_map, record_id_mapping,
         if record_id:
             updates.append({"record_id": record_id, "fields": fields})
         else:
+            # 非浙江业务组的客户，跳过新增
+            biz_area = row.get("业务区域名称", "")
+            if biz_area and biz_area.strip() != "浙江业务组":
+                print(f"  ⏭ 跳过非浙江业务组客户: {org_name}（{biz_area}）")
+                continue
             inserts.append({"org_name": org_name, "fields": fields})
 
     return updates, inserts, exceptions
