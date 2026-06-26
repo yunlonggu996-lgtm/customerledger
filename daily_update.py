@@ -103,26 +103,6 @@ def send_feishu_notification(webhook_url, success, update_count, error_msg=None,
         print(f"\n[通知] 飞书群消息推送异常: {e}")
 
 
-def clear_table(client, app_token, table_id):
-    """清空表中所有记录。"""
-    record_ids = []
-    page_token = ""
-    while True:
-        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
-        url += f"?page_size=500&page_token={page_token}" if page_token else "?page_size=500"
-        try:
-            resp = client._request(url)
-        except FeishuError:
-            break
-        items = resp.get("data", {}).get("items", []) or []
-        for item in items:
-            record_ids.append(item.get("record_id"))
-        page_token = resp.get("data", {}).get("page_token")
-        if not page_token:
-            break
-    if record_ids:
-        client.delete_records(app_token, table_id, record_ids, chunk_size=50)
-
 
 def fetch_latest_data(output_file=None):
     """从 boss-api 拉取最新数据。"""
@@ -232,13 +212,6 @@ def build_payload(data, columns, user_mapping, status_map, record_id_mapping,
     field_name_map = {f["field_id"]: f["field_name"] for f in bitable_fields}
     field_type_map = {f["field_name"]: f["type"] for f in bitable_fields}
 
-    # 多选/单选字段的选项映射 (选项名 -> 选项ID)
-    select_options_map = {}  # {field_name: {option_name: option_id}}
-    for f in bitable_fields:
-        if f["type"] in [3, 4]:  # 单选、多选
-            opts = f.get("property", {}).get("options", [])
-            select_options_map[f["field_name"]] = {opt["name"]: opt["id"] for opt in opts}
-
     mapping = {}
     user_field_names = []
     date_field_names = []
@@ -257,7 +230,7 @@ def build_payload(data, columns, user_mapping, status_map, record_id_mapping,
             user_field_names.append(col)
         elif ftype == 5:
             date_field_names.append(col)
-        elif ftype in [3, 4] and target_col in select_options_map:
+        elif ftype in [3, 4]:
             # 单选或多选字段，记录下来后面处理
             select_field_names.add(col)
             mapping[col] = field_map[target_col]
